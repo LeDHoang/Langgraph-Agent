@@ -1,0 +1,10 @@
+langgraph
+langchain
+langchain_openai
+langchain_community
+langchain-nomic
+tavily-python
+faiss-cpu
+langchain[sql]
+PyPDF
+IPython
