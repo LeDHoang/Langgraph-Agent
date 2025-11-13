@@ -4,92 +4,101 @@ load_dotenv()
 
 from langchain_community.utilities.sql_database import SQLDatabase
 from langchain_openai import ChatOpenAI
+from langchain_core.tools import tool
+import pathlib
 
-model = ChatOpenAI(
-    model="gpt-4o-mini",
-    temperature=0,
-    api_key=os.getenv("OPENAI_API_KEY")
-)
+# Initialize database connections (lazy loading)
+_databases = {}
 
-import requests, pathlib
+def _get_database(db_name="chinook"):
+    """Initialize and return the SQL database connection.
 
-url = "https://storage.googleapis.com/benchmarks-artifacts/chinook/Chinook.db"
-local_path = pathlib.Path("Chinook.db")
+    Args:
+        db_name: Name of the database to connect to ('chinook', 'employees', 'projects')
 
-if local_path.exists():
-    print(f"{local_path} already exists, skipping download.")
-else:
-    response = requests.get(url)
-    if response.status_code == 200:
-        local_path.write_bytes(response.content)
-        print(f"File downloaded and saved as {local_path}")
-    else:
-        print(f"Failed to download the file. Status code: {response.status_code}")
+    Returns:
+        SQLDatabase connection object
+    """
+    if db_name in _databases:
+        return _databases[db_name]
 
-#create SQLDatabase object
-from langchain_community.utilities import SQLDatabase
+    # Map database names to file paths
+    db_paths = {
+        "chinook": "Chinook.db",
+        "employees": "database/softwareone_employees.db",
+        "projects": "database/softwareone_projects.db"
+    }
 
-db = SQLDatabase.from_uri("sqlite:///Chinook.db")
+    if db_name not in db_paths:
+        available_dbs = list(db_paths.keys())
+        raise ValueError(f"Unknown database '{db_name}'. Available databases: {available_dbs}")
 
-#print dialect and available tables
-print(f"Dialect: {db.dialect}")
-print(f"Available tables: {db.get_usable_table_names()}")
-print(f'Sample output: {db.run("SELECT * FROM Artist LIMIT 5;")}')
+    db_path = pathlib.Path(db_paths[db_name])
+    if not db_path.exists():
+        raise FileNotFoundError(
+            f"Database file {db_path} not found. Please ensure the database exists."
+        )
 
-from langchain_community.agent_toolkits import SQLDatabaseToolkit
+    _databases[db_name] = SQLDatabase.from_uri(f"sqlite:///{db_path}")
+    return _databases[db_name]
 
-toolkit = SQLDatabaseToolkit(db=db, llm=model)
+@tool
+def sql_retrieval(query: str, database: str = "chinook") -> str:
+    """Execute a SQL query on the specified database and return results.
 
-tools = toolkit.get_tools()
+    Args:
+        query: A natural language question or SQL query to execute on the database.
+               If a natural language question is provided, the tool will attempt to
+               convert it to SQL and execute it.
+        database: Database to query ('chinook', 'employees', 'projects').
+                 Defaults to 'chinook' for backward compatibility.
 
-for tool in tools:
-    print(f"{tool.name}: {tool.description}\n")
-# sql_db_query: Input to this tool is a detailed and correct SQL query, output is a result from the database. If the query is not correct, an error message will be returned. If an error is returned, rewrite the query, check the query, and try again. If you encounter an issue with Unknown column 'xxxx' in 'field list', use sql_db_schema to query the correct table fields.
+    Returns:
+        The results from the SQL query execution
+    """
+    try:
+        db = _get_database(database)
+        
+        # If the query looks like a SQL statement, execute it directly
+        query_upper = query.strip().upper()
+        if query_upper.startswith(("SELECT", "WITH")):
+            # Direct SQL query
+            result = db.run(query)
+            return f"Query executed successfully. Results:\n{result}"
+        else:
+            # Natural language query - use LLM to generate SQL
+            model = ChatOpenAI(
+                model="gpt-4o-mini",
+                temperature=0,
+                api_key=os.getenv("OPENAI_API_KEY")
+            )
+            
+            # Get database schema information
+            tables = db.get_usable_table_names()
+            schema_info = ""
+            for table in tables[:5]:  # Limit to first 5 tables for context
+                schema_info += f"\n{table}:\n{db.get_table_info_no_throw([table])}\n"
+            
+            # Generate SQL query from natural language
+            prompt = f"""Given the following database schema:
+{schema_info}
 
-# sql_db_schema: Input to this tool is a comma-separated list of tables, output is the schema and sample rows for those tables. Be sure that the tables actually exist by calling sql_db_list_tables first! Example Input: table1, table2, table3
+Convert the following question into a SQL query: {query}
 
-# sql_db_list_tables: Input is an empty string, output is a comma-separated list of tables in the database.
-
-# sql_db_query_checker: Use this tool to double check if your query is correct before executing it. Always use this tool before executing a query with sql_db_query!
-system_prompt = """
-You are an agent designed to interact with a SQL database.
-Given an input question, create a syntactically correct {dialect} query to run,
-then look at the results of the query and return the answer. Unless the user
-specifies a specific number of examples they wish to obtain, always limit your
-query to at most {top_k} results.
-
-You can order the results by a relevant column to return the most interesting
-examples in the database. Never query for all the columns from a specific table,
-only ask for the relevant columns given the question.
-
-You MUST double check your query before executing it. If you get an error while
-executing a query, rewrite the query and try again.
-
-DO NOT make any DML statements (INSERT, UPDATE, DELETE, DROP etc.) to the
-database.
-
-To start you should ALWAYS look at the tables in the database to see what you
-can query. Do NOT skip this step.
-
-Then you should query the schema of the most relevant tables.
-""".format(
-    dialect=db.dialect,
-    top_k=5,
-)
-
-from langchain.agents import create_agent
-
-
-agent = create_agent(
-    model,
-    tools,
-    system_prompt=system_prompt,
-)
-
-question = "Which genre on average has the longest tracks?"
-
-for step in agent.stream(
-    {"messages": [{"role": "user", "content": question}]},
-    stream_mode="values",
-):
-    step["messages"][-1].pretty_print()
+Return ONLY the SQL query, nothing else. Do not include explanations or markdown formatting."""
+            
+            sql_query = model.invoke(prompt).content.strip()
+            
+            # Remove markdown code blocks if present
+            if sql_query.startswith("```"):
+                sql_query = sql_query.split("```")[1]
+                if sql_query.startswith("sql"):
+                    sql_query = sql_query[3:]
+                sql_query = sql_query.strip()
+            
+            # Execute the generated SQL query
+            result = db.run(sql_query)
+            return f"Generated SQL: {sql_query}\n\nResults:\n{result}"
+            
+    except Exception as e:
+        return f"Error executing SQL query: {str(e)}"

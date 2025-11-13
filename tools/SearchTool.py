@@ -19,31 +19,3 @@ def search_web(query: str) -> str:
     """
     search = GoogleSerperAPIWrapper()
     return search.run(query)
-
-# Test the search tool
-print("Testing search tool:")
-print(search_web.invoke("What is the capital of France?"))
-
-from langchain_openai import ChatOpenAI
-from langchain.agents import create_agent
-
-model = ChatOpenAI(
-    model="gpt-4o-mini",
-    temperature=0,
-    api_key=os.getenv("OPENAI_API_KEY")
-)
-
-tools = [search_web]
-agent = create_agent(model, tools)
-
-events = agent.stream(
-    {
-        "messages": [
-            ("user", "What is the hometown of the reigning men's U.S. Open champion 2025?")
-        ]
-    },
-    stream_mode="values",
-)
-
-for event in events:
-    event["messages"][-1].pretty_print()

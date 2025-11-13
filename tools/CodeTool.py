@@ -1,48 +1,69 @@
 from langchain_openai import ChatOpenAI
+from langchain_core.tools import tool
 import os
+import subprocess
+import sys
 from dotenv import load_dotenv
 load_dotenv()
 
-# Create the model with OpenAI Code Interpreter
-model = ChatOpenAI(
-    model="gpt-4o-mini",
-    api_key=os.getenv("OPENAI_API_KEY")
-)
+@tool
+def run_code(code: str) -> str:
+    """Execute Python code and return the result.
 
-# Bind OpenAI's built-in code interpreter tool
-model_with_code_interpreter = model.bind_tools(
-    [
-        {
-            "type": "code_interpreter",
-            # Create a new container for each execution
-            "container": {"type": "auto"},
-        }
-    ]
-)
+    Args:
+        code: Python code to execute. Can be a code snippet or a natural language
+              description of what code should be run.
 
-# Test the tool
-if __name__ == "__main__":
-    # Test with the model using OpenAI Code Interpreter
-    response = model_with_code_interpreter.invoke(
-        "Write and run code to answer the question: Calculate the sum of the first 1000 prime numbers?"
-    )
-    print(f"OpenAI Code Interpreter response: {response}")
+    Returns:
+        The output from executing the code
+    """
+    try:
+        # If the input looks like natural language, use LLM to generate code
+        code_clean = code.strip()
+        if not code_clean.startswith(("import", "from", "def", "class", "print", "#", "if", "for", "while", "try")):
+            # Likely natural language - generate code using LLM
+            model = ChatOpenAI(
+                model="gpt-4o-mini",
+                temperature=0,
+                api_key=os.getenv("OPENAI_API_KEY")
+            )
+            
+            prompt = f"""Convert the following request into executable Python code.
+Return ONLY the Python code, nothing else. No explanations, no markdown formatting, just the code.
 
-    # Show tool calls if any
-    if hasattr(response, 'tool_calls') and response.tool_calls:
-        print(f"Tool calls: {response.tool_calls}")
-
-    # Extract and display the generated code and results
-    if response.content and isinstance(response.content, list):
-        for item in response.content:
-            if item.get('type') == 'code_interpreter_call':
-                print(f"\OpenAI Code Interpreter Generated Code:")
-                print(f"Container ID: {item.get('container_id')}")
-                print(f"Status: {item.get('status')}")
-                print(f"Code:\n{item.get('code')}")
-                print("-" * 50)
-            elif item.get('type') == 'text':
-                print(f"OpenAI Code Interpreter Result: {item.get('text')}")
-    print("-" * 50)
-    # The response will contain the results from OpenAI's code interpreter
-    print(f"Final answer: {response.content}")
+Request: {code}"""
+            
+            generated_code = model.invoke(prompt).content.strip()
+            
+            # Remove markdown code blocks if present
+            if generated_code.startswith("```"):
+                generated_code = generated_code.split("```")[1]
+                if generated_code.startswith("python"):
+                    generated_code = generated_code[6:]
+                generated_code = generated_code.strip()
+            
+            code_to_execute = generated_code
+        else:
+            code_to_execute = code_clean
+        
+        # Execute the code
+        result = subprocess.run(
+            [sys.executable, "-c", code_to_execute],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        
+        if result.returncode == 0:
+            output = result.stdout.strip()
+            if not output:
+                output = "Code executed successfully (no output)."
+            return f"Code executed successfully.\n\nOutput:\n{output}"
+        else:
+            error = result.stderr.strip()
+            return f"Error executing code:\n{error}"
+            
+    except subprocess.TimeoutExpired:
+        return "Error: Code execution timed out (exceeded 30 seconds)."
+    except Exception as e:
+        return f"Error executing code: {str(e)}"
