@@ -1,7 +1,10 @@
 import streamlit as st
 from datetime import datetime
-from langgraph_main import run_agent_query
 from langchain_core.messages import HumanMessage, AIMessage
+import os
+import subprocess
+from pathlib import Path
+from tools.config import update_enabled_documents, update_enabled_databases
 
 # Page configuration
 st.set_page_config(
@@ -20,6 +23,25 @@ if "current_conversation_id" not in st.session_state:
 
 if "conversation_counter" not in st.session_state:
     st.session_state.conversation_counter = 1
+
+# Initialize file management session state
+if "file_window_expanded" not in st.session_state:
+    st.session_state.file_window_expanded = False
+
+if "file_toggles" not in st.session_state:
+    st.session_state.file_toggles = {}
+
+if "ingestion_status" not in st.session_state:
+    st.session_state.ingestion_status = None
+
+# Initialize tool management session state
+if "tool_toggles" not in st.session_state:
+    st.session_state.tool_toggles = {
+        "search_web": True,
+        "document_retrieval": True,
+        "sql_retrieval": True,
+        "run_code": True
+    }
 
 def create_new_conversation():
     """Create a new conversation and return its ID."""
@@ -50,6 +72,87 @@ def update_current_conversation(messages=None, tools_used=None, execution_logs=N
             st.session_state.conversations[conv_id]["tools_used"] = tools_used
         if execution_logs is not None:
             st.session_state.conversations[conv_id]["execution_logs"] = execution_logs
+
+def get_docs_files():
+    """Get all files from the docs directory."""
+    docs_path = Path("docs")
+    if docs_path.exists():
+        return [f.name for f in docs_path.iterdir() if f.is_file()]
+    return []
+
+def get_database_files():
+    """Get all files from the database directory."""
+    db_path = Path("database")
+    if db_path.exists():
+        return [f.name for f in db_path.iterdir() if f.is_file()]
+    return []
+
+def ingest_documents():
+    """Run the document ingestion script."""
+    try:
+        # Run the ingestion script
+        result = subprocess.run(
+            ["python", "tools/ingests_docs.py"],
+            capture_output=True,
+            text=True,
+            cwd=os.getcwd()
+        )
+        if result.returncode == 0:
+            # Refresh the vector store in DocumentTool after successful ingestion
+            try:
+                from tools.DocumentTool import refresh_vector_store
+                refresh_vector_store()
+                print("✅ Vector store refreshed after ingestion")
+            except Exception as refresh_error:
+                print(f"⚠️  Vector store refresh failed: {refresh_error}")
+                # Don't fail the whole process if refresh fails
+
+            return "✅ Documents and databases ingested successfully!"
+        else:
+            return f"❌ Ingestion failed: {result.stderr}"
+    except Exception as e:
+        return f"❌ Error during ingestion: {str(e)}"
+
+def get_enabled_tools():
+    """Get the list of enabled tools based on toggle states."""
+    enabled_tools = []
+    tool_configs = {
+        "search_web": ("Search Web", "🔍"),
+        "document_retrieval": ("Document Retrieval", "📄"),
+        "sql_retrieval": ("SQL Query", "🗄️"),
+        "run_code": ("Code Execution", "💻")
+    }
+
+    for tool_name, (display_name, icon) in tool_configs.items():
+        if st.session_state.tool_toggles.get(tool_name, True):
+            enabled_tools.append({
+                "name": tool_name,
+                "display_name": display_name,
+                "icon": icon
+            })
+
+    return enabled_tools
+
+def get_enabled_tool_functions():
+    """Get the actual tool functions that are enabled."""
+    from tools.SearchTool import search_web
+    from tools.DocumentTool import document_retrieval
+    from tools.SQLTool import sql_retrieval
+    from tools.CodeTool import run_code
+
+    tool_functions = {
+        "search_web": search_web,
+        "document_retrieval": document_retrieval,
+        "sql_retrieval": sql_retrieval,
+        "run_code": run_code
+    }
+
+    enabled_functions = []
+    for tool_name in st.session_state.tool_toggles:
+        if st.session_state.tool_toggles[tool_name]:
+            enabled_functions.append(tool_functions[tool_name])
+
+    return enabled_functions
 
 # Sidebar for conversation management
 with st.sidebar:
@@ -115,6 +218,80 @@ with st.sidebar:
 # Main content area
 st.title("🤖 LangGraph Agent Chat")
 
+# Collapsible File Window
+with st.expander("📁 Document & Database Files", expanded=st.session_state.file_window_expanded):
+    col1, col2 = st.columns([3, 1])
+
+    with col1:
+        st.subheader("📄 Documents")
+        docs_files = get_docs_files()
+        enabled_docs = []
+        if docs_files:
+            for file in docs_files:
+                file_key = f"docs_{file}"
+                if file_key not in st.session_state.file_toggles:
+                    st.session_state.file_toggles[file_key] = True
+
+                checked = st.checkbox(
+                    f"📄 {file}",
+                    value=st.session_state.file_toggles[file_key],
+                    key=file_key,
+                    help=f"Toggle {file} for agent access"
+                )
+                st.session_state.file_toggles[file_key] = checked
+                if checked:
+                    enabled_docs.append(file)
+        else:
+            st.info("No documents found in docs/ directory")
+
+        # Update document configuration
+        update_enabled_documents(enabled_docs)
+
+        st.subheader("🗄️ Databases")
+        db_files = get_database_files()
+        enabled_dbs = []
+        if db_files:
+            for file in db_files:
+                file_key = f"db_{file}"
+                if file_key not in st.session_state.file_toggles:
+                    st.session_state.file_toggles[file_key] = True
+
+                checked = st.checkbox(
+                    f"🗄️ {file}",
+                    value=st.session_state.file_toggles[file_key],
+                    key=file_key,
+                    help=f"Toggle {file} for agent access"
+                )
+                st.session_state.file_toggles[file_key] = checked
+                if checked:
+                    # Map database filename to database key
+                    if "employees" in file:
+                        enabled_dbs.append("employees")
+                    elif "projects" in file:
+                        enabled_dbs.append("projects")
+                    else:
+                        enabled_dbs.append("chinook")  # Default to chinook
+        else:
+            st.info("No database files found in database/ directory")
+
+        # Update database configuration
+        update_enabled_databases(enabled_dbs)
+
+    with col2:
+        st.subheader("Actions")
+        if st.button("🔄 Re-ingest Documents", type="primary", help="Re-run document ingestion to update the knowledge base"):
+            with st.spinner("Ingesting documents..."):
+                status = ingest_documents()
+                st.session_state.ingestion_status = status
+                st.success(status)
+                st.rerun()
+
+        if st.session_state.ingestion_status:
+            if "✅" in st.session_state.ingestion_status:
+                st.success(st.session_state.ingestion_status)
+            else:
+                st.error(st.session_state.ingestion_status)
+
 # Ensure we have a current conversation
 if st.session_state.current_conversation_id is None and st.session_state.conversations:
     # Auto-select the most recent conversation
@@ -171,19 +348,36 @@ if prompt := st.chat_input("Ask the LangGraph agent anything..."):
     # Show loading spinner while processing
     with st.spinner("🤖 Agent is thinking..."):
         try:
-            # Call the agent
-            response, tools_used, execution_logs = run_agent_query(prompt)
+            # Get enabled tools for this query
+            enabled_tools = get_enabled_tool_functions()
 
-            # Create AI message
-            ai_message = AIMessage(content=response)
-            current_conv["messages"].append(ai_message)
+            if not enabled_tools:
+                error_msg = "No tools are enabled. Please enable at least one tool in the Tool Management section."
+                ai_message = AIMessage(content=error_msg)
+                current_conv["messages"].append(ai_message)
+                update_current_conversation(messages=current_conv["messages"])
+                tools_used = []
+                execution_logs = [{"type": "error", "message": "No tools enabled"}]
+            else:
+                # Import and call the agent with enabled tools
+                from langgraph_main import create_agent_with_tools, run_agent_query_with_tools
 
-            # Update conversation with results
-            update_current_conversation(
-                messages=current_conv["messages"],
-                tools_used=tools_used,
-                execution_logs=execution_logs
-            )
+                # Create agent with only enabled tools
+                agent = create_agent_with_tools(enabled_tools)
+
+                # Call the agent
+                response, tools_used, execution_logs = run_agent_query_with_tools(agent, prompt)
+
+                # Create AI message
+                ai_message = AIMessage(content=response)
+                current_conv["messages"].append(ai_message)
+
+                # Update conversation with results
+                update_current_conversation(
+                    messages=current_conv["messages"],
+                    tools_used=tools_used,
+                    execution_logs=execution_logs
+                )
 
         except Exception as e:
             error_msg = f"Error: {str(e)}"
@@ -242,6 +436,86 @@ if current_conv["tools_used"]:
                         st.write(f"**Timestamp:** {tool['timestamp']}")
 else:
     st.info("No tools were used in this conversation yet.")
+
+# Tool Management Window
+st.subheader("🔧 Tool Management")
+
+with st.expander("⚙️ Enable/Disable Tools", expanded=False):
+    st.write("Control which tools are available to the agent. Disabled tools will not be accessible during conversations.")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.subheader("🔍 Web Search")
+        search_enabled = st.checkbox(
+            "Enable Web Search Tool",
+            value=st.session_state.tool_toggles["search_web"],
+            key="toggle_search_web",
+            help="Allow the agent to search the web for information"
+        )
+        st.session_state.tool_toggles["search_web"] = search_enabled
+
+        if search_enabled:
+            st.success("✅ Web search is enabled")
+        else:
+            st.warning("❌ Web search is disabled")
+
+    with col2:
+        st.subheader("📄 Document Retrieval")
+        doc_enabled = st.checkbox(
+            "Enable Document Retrieval Tool",
+            value=st.session_state.tool_toggles["document_retrieval"],
+            key="toggle_document_retrieval",
+            help="Allow the agent to search through ingested documents"
+        )
+        st.session_state.tool_toggles["document_retrieval"] = doc_enabled
+
+        if doc_enabled:
+            st.success("✅ Document retrieval is enabled")
+        else:
+            st.warning("❌ Document retrieval is disabled")
+
+    with col1:
+        st.subheader("🗄️ SQL Query")
+        sql_enabled = st.checkbox(
+            "Enable SQL Query Tool",
+            value=st.session_state.tool_toggles["sql_retrieval"],
+            key="toggle_sql_retrieval",
+            help="Allow the agent to query databases with SQL"
+        )
+        st.session_state.tool_toggles["sql_retrieval"] = sql_enabled
+
+        if sql_enabled:
+            st.success("✅ SQL query is enabled")
+        else:
+            st.warning("❌ SQL query is disabled")
+
+    with col2:
+        st.subheader("💻 Code Execution")
+        code_enabled = st.checkbox(
+            "Enable Code Execution Tool",
+            value=st.session_state.tool_toggles["run_code"],
+            key="toggle_run_code",
+            help="Allow the agent to execute Python code"
+        )
+        st.session_state.tool_toggles["run_code"] = code_enabled
+
+        if code_enabled:
+            st.success("✅ Code execution is enabled")
+        else:
+            st.warning("❌ Code execution is disabled")
+
+    # Show summary of enabled tools
+    enabled_tools = get_enabled_tools()
+    if enabled_tools:
+        st.subheader("✅ Currently Enabled Tools")
+        enabled_cols = st.columns(min(len(enabled_tools), 4))
+        for i, tool in enumerate(enabled_tools):
+            col_idx = i % 4
+            with enabled_cols[col_idx]:
+                st.info(f"{tool['icon']} {tool['display_name']}")
+    else:
+        st.error("⚠️ No tools are currently enabled! The agent will not be able to perform any actions.")
 
 # Execution Logs Display
 st.subheader("📋 Execution Logs")

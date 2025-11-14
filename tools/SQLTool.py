@@ -7,6 +7,15 @@ from langchain_openai import ChatOpenAI
 from langchain_core.tools import tool
 import pathlib
 
+# Import config functions - handle both direct execution and module import
+try:
+    from .config import is_database_enabled
+except ImportError:
+    # If running as script, import directly
+    import sys
+    sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+    from config import is_database_enabled
+
 # Initialize database connections (lazy loading)
 _databases = {}
 
@@ -46,6 +55,8 @@ def _get_database(db_name="chinook"):
 def sql_retrieval(query: str, database: str = "chinook") -> str:
     """Execute a SQL query on the specified database and return results.
 
+    Only enabled databases can be accessed.
+
     Args:
         query: A natural language question or SQL query to execute on the database.
                If a natural language question is provided, the tool will attempt to
@@ -56,6 +67,10 @@ def sql_retrieval(query: str, database: str = "chinook") -> str:
     Returns:
         The results from the SQL query execution
     """
+    # Check if database is enabled
+    if not is_database_enabled(database):
+        return f"Database '{database}' is not enabled for access. Please enable it in the file management panel."
+
     try:
         db = _get_database(database)
         
