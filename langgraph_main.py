@@ -25,7 +25,15 @@ model = ChatOpenAI(
 agent = create_agent(
     model=model,
     tools=[search_web, document_retrieval, sql_retrieval, run_code],
-    system_prompt="You are a helpful assistant with access to various tools. Use the appropriate tools to answer user questions effectively."
+    system_prompt="""You are a helpful assistant with access to various tools. When answering questions, follow this priority order:
+
+1. FIRST: Check document_retrieval tool for information from ingested documents
+2. SECOND: Check sql_retrieval tool for information from databases
+3. LAST: Only use search_web tool if the information cannot be found in local documents or databases
+
+Always prefer local, authoritative sources (documents and databases) over online search results. Only search the web as a last resort when local sources don't contain the needed information.
+
+Use the code execution tool only when you need to perform calculations, data analysis, or run code - not for information retrieval."""
 )
 
 def create_agent_with_tools(tools_list):
@@ -33,7 +41,15 @@ def create_agent_with_tools(tools_list):
     return create_agent(
         model=model,
         tools=tools_list,
-        system_prompt="You are a helpful assistant with access to various tools. Use the appropriate tools to answer user questions effectively."
+        system_prompt="""You are a helpful assistant with access to various tools. When answering questions, follow this priority order:
+
+1. FIRST: Check document_retrieval tool for information from ingested documents (if available)
+2. SECOND: Check sql_retrieval tool for information from databases (if available)
+3. LAST: Only use search_web tool if the information cannot be found in local documents or databases (if available)
+
+Always prefer local, authoritative sources (documents and databases) over online search results. Only search the web as a last resort when local sources don't contain the needed information.
+
+Use the code execution tool only when you need to perform calculations, data analysis, or run code - not for information retrieval."""
     )
 
 def run_agent_query(query: str, conversation_history: list = None):

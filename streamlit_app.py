@@ -331,6 +331,23 @@ with chat_container:
             with st.chat_message("system"):
                 st.write(f"System: {message.content}")
 
+# Tool priority information
+enabled_tools = get_enabled_tools()
+if enabled_tools:
+    priority_tools = [t for t in enabled_tools if t['name'] in ['document_retrieval', 'sql_retrieval', 'search_web']]
+
+    # Sort by priority order: documents first, then SQL, then web search
+    priority_order = {
+        "document_retrieval": 1,
+        "sql_retrieval": 2,
+        "search_web": 3
+    }
+    priority_tools.sort(key=lambda x: priority_order.get(x['name'], 4))
+
+    if priority_tools:
+        priority_text = " → ".join([f"{t['icon']} {t['display_name']}" for t in priority_tools])
+        st.caption(f"🔄 **Search Priority:** {priority_text}")
+
 # Chat input
 if prompt := st.chat_input("Ask the LangGraph agent anything..."):
     # Add user message to conversation
@@ -442,6 +459,7 @@ st.subheader("🔧 Tool Management")
 
 with st.expander("⚙️ Enable/Disable Tools", expanded=False):
     st.write("Control which tools are available to the agent. Disabled tools will not be accessible during conversations.")
+    st.info("📋 **Tool Priority Order:** 1️⃣ Documents → 2️⃣ Databases → 3️⃣ Web Search (only when local sources don't have the information)")
 
     col1, col2 = st.columns(2)
 
@@ -509,11 +527,25 @@ with st.expander("⚙️ Enable/Disable Tools", expanded=False):
     enabled_tools = get_enabled_tools()
     if enabled_tools:
         st.subheader("✅ Currently Enabled Tools")
-        enabled_cols = st.columns(min(len(enabled_tools), 4))
-        for i, tool in enumerate(enabled_tools):
+        st.caption("🔄 Tools will be used in this priority order: Documents → Databases → Web Search → Code")
+
+        # Sort tools by priority for display
+        priority_order = {
+            "document_retrieval": 1,
+            "sql_retrieval": 2,
+            "search_web": 3,
+            "run_code": 4
+        }
+
+        sorted_tools = sorted(enabled_tools, key=lambda x: priority_order.get(x['name'], 5))
+
+        enabled_cols = st.columns(min(len(sorted_tools), 4))
+        for i, tool in enumerate(sorted_tools):
             col_idx = i % 4
+            priority_num = priority_order.get(tool['name'], 5)
+            priority_emoji = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"][priority_num - 1] if priority_num <= 4 else "❓"
             with enabled_cols[col_idx]:
-                st.info(f"{tool['icon']} {tool['display_name']}")
+                st.info(f"{priority_emoji} {tool['icon']} {tool['display_name']}")
     else:
         st.error("⚠️ No tools are currently enabled! The agent will not be able to perform any actions.")
 
