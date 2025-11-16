@@ -1,8 +1,9 @@
-# LangGraph Agent using official LangChain create_agent pattern
+# LangGraph Agent using LangChain create_agent with detailed logging
 from langchain.agents import create_agent
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 import os
+from datetime import datetime
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -21,40 +22,31 @@ model = ChatOpenAI(
     api_key=openai_api_key
 )
 
-# Create agent using official LangChain pattern with automatic tool selection
-agent = create_agent(
-    model=model,
-    tools=[search_web, document_retrieval, sql_retrieval, run_code],
-    system_prompt="""You are a helpful assistant with access to various tools. When answering questions, follow this priority order:
+def create_agent_with_tools(tools_list):
+    """Create an agent with a specific set of tools using LangChain create_agent."""
+    tool_names = [tool.name for tool in tools_list]
+    system_prompt = f"""You are a helpful assistant with access to various tools. When answering questions, follow this priority order:
 
-1. FIRST: Check document_retrieval tool for information from ingested documents
-2. SECOND: Check sql_retrieval tool for information from databases
-3. LAST: Only use search_web tool if the information cannot be found in local documents or databases
+1. FIRST: Check document_retrieval tool for information from ingested documents (if available: {'✅' if 'document_retrieval' in tool_names else '❌'})
+2. SECOND: Check sql_retrieval tool for information from databases (if available: {'✅' if 'sql_retrieval' in tool_names else '❌'})
+3. LAST: Only use search_web tool if the information cannot be found in local documents or databases (if available: {'✅' if 'search_web' in tool_names else '❌'})
 
 Always prefer local, authoritative sources (documents and databases) over online search results. Only search the web as a last resort when local sources don't contain the needed information.
 
 Use the code execution tool only when you need to perform calculations, data analysis, or run code - not for information retrieval."""
-)
 
-def create_agent_with_tools(tools_list):
-    """Create an agent with a specific set of tools."""
     return create_agent(
         model=model,
         tools=tools_list,
-        system_prompt="""You are a helpful assistant with access to various tools. When answering questions, follow this priority order:
-
-1. FIRST: Check document_retrieval tool for information from ingested documents (if available)
-2. SECOND: Check sql_retrieval tool for information from databases (if available)
-3. LAST: Only use search_web tool if the information cannot be found in local documents or databases (if available)
-
-Always prefer local, authoritative sources (documents and databases) over online search results. Only search the web as a last resort when local sources don't contain the needed information.
-
-Use the code execution tool only when you need to perform calculations, data analysis, or run code - not for information retrieval."""
+        system_prompt=system_prompt
     )
+
+# Create default agent with all tools
+default_agent = create_agent_with_tools([search_web, document_retrieval, sql_retrieval, run_code])
 
 def run_agent_query(query: str, conversation_history: list = None):
     """
-    Execute agent query and capture tool usage and execution logs.
+    Execute agent query using LangChain create_agent and capture detailed tool usage and execution logs.
 
     Args:
         query: User query string
@@ -76,8 +68,24 @@ def run_agent_query(query: str, conversation_history: list = None):
     execution_logs = []
 
     try:
+        # Log the start of execution
+        execution_logs.append({
+            "type": "execution_start",
+            "timestamp": datetime.now().isoformat(),
+            "query": query,
+            "available_tools": ["search_web", "document_retrieval", "sql_retrieval", "run_code"]
+        })
+
         # Use invoke to get the complete result and analyze execution
-        result = agent.invoke({"messages": messages})
+        result = default_agent.invoke({"messages": messages})
+
+        # Log the agent execution
+        execution_logs.append({
+            "type": "agent_execution",
+            "timestamp": datetime.now().isoformat(),
+            "input_messages": len(messages),
+            "result_type": type(result).__name__
+        })
 
         # Extract final response
         final_messages = result["messages"]
@@ -92,6 +100,7 @@ def run_agent_query(query: str, conversation_history: list = None):
             "type": "execution_overview",
             "step": 1,
             "total_messages": len(final_messages),
+            "timestamp": datetime.now().isoformat(),
             "message_flow": [
                 {
                     "index": i,
@@ -112,7 +121,7 @@ def run_agent_query(query: str, conversation_history: list = None):
                         "tool_name": tool_call["name"],
                         "call_id": tool_call["id"],
                         "arguments": tool_call["args"],
-                        "timestamp": getattr(msg, 'timestamp', None),
+                        "timestamp": datetime.now().isoformat(),
                         "status": "called"
                     }
 
@@ -133,13 +142,13 @@ def run_agent_query(query: str, conversation_history: list = None):
             "type": "error",
             "step": len(execution_logs) + 1,
             "error": error_msg,
-            "timestamp": str(os.times())
+            "timestamp": datetime.now().isoformat()
         })
         return error_msg, [], execution_logs
 
 def run_agent_query_with_tools(agent_instance, query: str, conversation_history: list = None):
     """
-    Execute agent query with a specific agent instance and capture tool usage and execution logs.
+    Execute agent query with a specific agent instance and capture detailed tool usage and execution logs.
 
     Args:
         agent_instance: The agent to use for the query
@@ -162,8 +171,24 @@ def run_agent_query_with_tools(agent_instance, query: str, conversation_history:
     execution_logs = []
 
     try:
+        # Log the start of execution
+        execution_logs.append({
+            "type": "execution_start",
+            "timestamp": datetime.now().isoformat(),
+            "query": query,
+            "agent_type": "custom_agent"
+        })
+
         # Use invoke to get the complete result and analyze execution
         result = agent_instance.invoke({"messages": messages})
+
+        # Log the agent execution
+        execution_logs.append({
+            "type": "agent_execution",
+            "timestamp": datetime.now().isoformat(),
+            "input_messages": len(messages),
+            "result_type": type(result).__name__
+        })
 
         # Extract final response
         final_messages = result["messages"]
@@ -178,6 +203,7 @@ def run_agent_query_with_tools(agent_instance, query: str, conversation_history:
             "type": "execution_overview",
             "step": 1,
             "total_messages": len(final_messages),
+            "timestamp": datetime.now().isoformat(),
             "message_flow": [
                 {
                     "index": i,
@@ -198,7 +224,7 @@ def run_agent_query_with_tools(agent_instance, query: str, conversation_history:
                         "tool_name": tool_call["name"],
                         "call_id": tool_call["id"],
                         "arguments": tool_call["args"],
-                        "timestamp": getattr(msg, 'timestamp', None),
+                        "timestamp": datetime.now().isoformat(),
                         "status": "called"
                     }
 
@@ -219,14 +245,14 @@ def run_agent_query_with_tools(agent_instance, query: str, conversation_history:
             "type": "error",
             "step": len(execution_logs) + 1,
             "error": error_msg,
-            "timestamp": str(os.times())
+            "timestamp": datetime.now().isoformat()
         })
         return error_msg, [], execution_logs
 
 # Example usage:
 if __name__ == "__main__":
-    # Test the new agent
-    query = "Search for information about Python programming function print()"
+    # Test the agent
+    query = "What are Python data types?"
     print(f"Testing query: {query}")
 
     response, tools_used, execution_logs = run_agent_query(query)

@@ -90,3 +90,7 @@ def get_all_databases() -> Dict[str, str]:
 # Initialize with defaults if config doesn't exist
 if not CONFIG_FILE.exists():
     save_config(DEFAULT_CONFIG)
+
+
+
+
